@@ -6,8 +6,15 @@ services:
     image: whatidid-local:latest
     container_name: whatidid-local
     environment:
-      # Optional. If set, enables Models API analysis.
+      # Legacy token path.
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      # Recommended custom endpoint path (Azure Foundry / Azure OpenAI compatible).
+      - WHATIDID_API_URL=${WHATIDID_API_URL:-}
+      - WHATIDID_MODEL=${WHATIDID_MODEL:-gpt-5.4}
+      - WHATIDID_API_KEY=${WHATIDID_API_KEY:-}
+      - WHATIDID_API_AUTH=${WHATIDID_API_AUTH:-auto}
+      - WHATIDID_API_VERSION=${WHATIDID_API_VERSION:-}
+      - WHATIDID_API_PROVIDER=${WHATIDID_API_PROVIDER:-azure}
       # Optional tuning knob for day-level concurrency.
       - WHATIDID_ANALYZE_WORKERS=${WHATIDID_ANALYZE_WORKERS:-5}
     volumes:

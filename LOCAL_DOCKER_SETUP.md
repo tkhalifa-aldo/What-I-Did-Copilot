@@ -23,6 +23,20 @@ cp .env.example .env
 
 2. Optional: open `.env` and paste your token into `GITHUB_TOKEN=`.
 
+3. To use Azure Foundry / Azure OpenAI for AI analysis, set these in `.env`:
+
+```bash
+WHATIDID_API_URL=https://<your-resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions
+WHATIDID_MODEL=gpt-5.4
+WHATIDID_API_KEY=<your-secret-key>
+WHATIDID_API_AUTH=api-key
+WHATIDID_API_VERSION=2024-10-21
+WHATIDID_API_PROVIDER=azure
+```
+
+If your endpoint already includes `api-version` in the URL, leave
+`WHATIDID_API_VERSION=` empty.
+
 ## Run
 
 Default 7-day report:

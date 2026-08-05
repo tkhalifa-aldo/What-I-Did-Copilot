@@ -13,6 +13,7 @@ import random
 import http.client
 import urllib.request
 import urllib.error
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from pathlib import Path
 from typing import Literal
 from harvest import compute_active_minutes, compute_elapsed_minutes
@@ -25,12 +26,63 @@ _DISABLE_CLI_VAR = "WHATIDID_DISABLE_COPILOT_CLI"
 
 AnalysisSource = Literal["api", "cli", "heuristic"]
 
-# GitHub Models API — OpenAI-compatible endpoint, authenticated with GitHub token
-API_URL = "https://models.github.ai/inference/chat/completions"
-MODEL   = "openai/gpt-4o-mini"
+# Default (legacy) endpoint. Override via env vars to use a supported provider.
+DEFAULT_API_URL = "https://models.github.ai/inference/chat/completions"
+DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 # ~3000 tokens, leaving ~5000 for prompt + response
 MAX_TRANSCRIPT_CHARS = 25000
+
+
+def _provider_name() -> str:
+    """Configured provider label (for logs/messages)."""
+    return (os.environ.get("WHATIDID_API_PROVIDER") or "github").strip().lower()
+
+
+def _api_url() -> str:
+    """Configured chat-completions endpoint URL."""
+    return (os.environ.get("WHATIDID_API_URL") or DEFAULT_API_URL).strip()
+
+
+def _api_model() -> str:
+    """Configured model/deployment identifier sent in request body."""
+    return (os.environ.get("WHATIDID_MODEL") or DEFAULT_MODEL).strip()
+
+
+def _api_auth_headers() -> dict:
+    """Build authentication headers for the configured provider.
+
+    Supported env modes:
+      - WHATIDID_API_AUTH=api-key  + WHATIDID_API_KEY
+      - WHATIDID_API_AUTH=bearer   + WHATIDID_API_KEY (or GITHUB_TOKEN/gh token)
+      - auto (default): use API key if set, otherwise GitHub bearer token
+    """
+    auth_mode = (os.environ.get("WHATIDID_API_AUTH") or "auto").strip().lower()
+    api_key = (os.environ.get("WHATIDID_API_KEY") or "").strip()
+
+    if auth_mode == "api-key":
+        return {"api-key": api_key} if api_key else {}
+    if auth_mode == "bearer":
+        bearer = api_key or _get_github_token()
+        return {"Authorization": f"Bearer {bearer}"} if bearer else {}
+
+    # auto
+    if api_key:
+        return {"api-key": api_key}
+    bearer = _get_github_token()
+    return {"Authorization": f"Bearer {bearer}"} if bearer else {}
+
+
+def _with_api_version(url: str) -> str:
+    """Append api-version query parameter when configured and missing."""
+    api_version = (os.environ.get("WHATIDID_API_VERSION") or "").strip()
+    if not api_version:
+        return url
+    parts = urlsplit(url)
+    q = dict(parse_qsl(parts.query, keep_blank_values=True))
+    if "api-version" not in q:
+        q["api-version"] = api_version
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))
 
 
 def _retry_delay(err, attempt: int) -> float:
@@ -296,24 +348,29 @@ def check_api_health() -> tuple:
     """Quick connectivity check to the configured AI analysis API.
 
     Returns (status: str, message: str) where status is one of:
-    "ok"        — API reachable and authenticated
-    "auth"      — reachable but authentication failed (don't retry)
-    "down"      — unreachable or server error (retry may help)
-    "retired"   — endpoint has been permanently retired (don't retry)
+      "ok"      — API reachable and authenticated
+      "auth"    — reachable but authentication failed (don't retry)
+      "down"    — unreachable or server error (retry may help)
+      "retired" — endpoint has been permanently retired (don't retry)
     """
-    token = _get_github_token()
-    if not token:
-        return "auth", "No GitHub token found. Run `gh auth login`."
+    provider = _provider_name()
+    endpoint = _with_api_version(_api_url())
+    model = _api_model()
+    auth_headers = _api_auth_headers()
+    if not auth_headers:
+        if provider == "github":
+            return "auth", "No auth found. Set GITHUB_TOKEN (or run `gh auth login`) or WHATIDID_API_KEY."
+        return "auth", "No auth found. Set WHATIDID_API_KEY (or WHATIDID_API_AUTH/WHATIDID_API_KEY)."
 
     # Minimal request — cheap and fast
     payload = json.dumps({
-        "model": MODEL, "max_tokens": 5, "temperature": 0,
+        "model": model, "max_tokens": 5, "temperature": 0,
         "messages": [{"role": "user", "content": "ping"}],
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        API_URL, data=payload,
-        headers={"Authorization": f"Bearer {token}", "content-type": "application/json"},
+        endpoint, data=payload,
+        headers={**auth_headers, "content-type": "application/json"},
         method="POST",
     )
     try:
@@ -321,13 +378,15 @@ def check_api_health() -> tuple:
             return "ok", "API reachable."
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            return "auth", f"Authentication failed (HTTP {e.code}). Run `gh auth login` to refresh your token."
+            return "auth", f"Authentication failed (HTTP {e.code}). Check WHATIDID_API_KEY/WHATIDID_API_AUTH settings."
         if e.code == 410:
-            return "retired", "API returned HTTP 410 (Gone). GitHub Models has been retired."
+            if provider == "github":
+                return "retired", "API returned HTTP 410 (Gone). GitHub Models has been retired."
+            return "retired", "API returned HTTP 410 (Gone). Endpoint appears retired or removed."
         if e.code == 429:
             retry_after = e.headers.get("Retry-After") if e.headers else None
             wait = f" Retry after {retry_after}s." if retry_after else ""
-            return "down", f"Rate limited (HTTP 429) — too many requests to the GitHub Models API.{wait}"
+            return "down", f"Rate limited (HTTP 429) — too many requests to configured API.{wait}"
         reason = (e.reason or "").strip() if hasattr(e, "reason") else ""
         suffix = f" — {reason}" if reason else ""
         return "down", f"API returned HTTP {e.code}{suffix}."
@@ -799,15 +858,17 @@ def analyze_day(target_date: str, sessions: list, refresh: bool = False,
         return _attach_metrics(_fallback_analysis(target_date, sessions))
 
     # analysis_source == "api"
-    token = _get_github_token()
-    if not token:
+    endpoint = _with_api_version(_api_url())
+    model = _api_model()
+    auth_headers = _api_auth_headers()
+    if not auth_headers:
         # No token = Models API impossible. Try CLI before heuristic.
-        print("  (No GitHub token — trying Copilot CLI for analysis...)")
+        print("  (No API auth configured — trying Copilot CLI for analysis...)")
         cli_result = _analyze_via_copilot_cli(prompt)
         if cli_result:
             return _finalize_and_cache(cli_result, "ai-copilot-cli")
         print("  (Copilot CLI unavailable — using heuristic analysis. "
-              "Run `gh auth login` to enable semantic analysis.)")
+              "Set WHATIDID_API_KEY/WHATIDID_API_URL to enable semantic analysis.)")
         return _attach_metrics(_fallback_analysis(target_date, sessions))
 
     # Build the request payload inside the loop so an oversized-prompt rejection
@@ -819,17 +880,14 @@ def analyze_day(target_date: str, sessions: list, refresh: bool = False,
 
     def _build_req(p: str) -> urllib.request.Request:
         payload = json.dumps({
-            "model":       MODEL,
+            "model":       model,
             "max_tokens":  3000,
             "temperature": 0,
             "messages":    [{"role": "user", "content": p}],
         }).encode("utf-8")
         return urllib.request.Request(
-            API_URL, data=payload,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "content-type":  "application/json",
-            },
+            endpoint, data=payload,
+            headers={**auth_headers, "content-type": "application/json"},
             method="POST",
         )
 
