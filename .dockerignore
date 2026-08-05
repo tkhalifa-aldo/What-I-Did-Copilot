@@ -1,0 +1,7 @@
+cache/
+reports/
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.html

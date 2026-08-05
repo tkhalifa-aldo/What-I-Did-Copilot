@@ -1,0 +1,22 @@
+services:
+  whatidid:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: whatidid-local:latest
+    container_name: whatidid-local
+    environment:
+      # Optional. If set, enables Models API analysis.
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      # Optional tuning knob for day-level concurrency.
+      - WHATIDID_ANALYZE_WORKERS=${WHATIDID_ANALYZE_WORKERS:-5}
+    volumes:
+      # Persist analysis cache so runs do not reprocess unchanged dates.
+      - ./cache:/app/cache
+      # Persist generated HTML reports outside the container layer.
+      - ./reports:/app/reports
+      # Copilot CLI sessions from host.
+      - ${HOME}/.copilot/session-state:/root/.copilot/session-state:ro
+      # VS Code Copilot Chat sessions from host (macOS path).
+      - ${HOME}/Library/Application Support/Code/User:/root/Library/Application Support/Code/User:ro
+    command: ["--7D", "--out-dir", "/app/reports"]

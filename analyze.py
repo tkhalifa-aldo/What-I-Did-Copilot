@@ -293,12 +293,13 @@ def check_copilot_cli_health() -> tuple:
 
 
 def check_api_health() -> tuple:
-    """Quick connectivity check to the GitHub Models API.
+    """Quick connectivity check to the configured AI analysis API.
 
     Returns (status: str, message: str) where status is one of:
-      "ok"        — API reachable and authenticated
-      "auth"      — reachable but authentication failed (don't retry)
-      "down"      — unreachable or server error (retry may help)
+    "ok"        — API reachable and authenticated
+    "auth"      — reachable but authentication failed (don't retry)
+    "down"      — unreachable or server error (retry may help)
+    "retired"   — endpoint has been permanently retired (don't retry)
     """
     token = _get_github_token()
     if not token:
@@ -321,6 +322,8 @@ def check_api_health() -> tuple:
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return "auth", f"Authentication failed (HTTP {e.code}). Run `gh auth login` to refresh your token."
+        if e.code == 410:
+            return "retired", "API returned HTTP 410 (Gone). GitHub Models has been retired."
         if e.code == 429:
             retry_after = e.headers.get("Retry-After") if e.headers else None
             wait = f" Retry after {retry_after}s." if retry_after else ""

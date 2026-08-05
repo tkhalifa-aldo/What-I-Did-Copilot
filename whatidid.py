@@ -1029,6 +1029,19 @@ def main():
     if status == "ok":
         print("[OK] connected.")
         api_ok = True
+    elif status == "retired":
+        print(f"[FAIL] {msg}\n")
+        print("  The GitHub Models inference endpoint this tool uses is retired.")
+        print("  Trying Copilot CLI as a fallback... ", end="", flush=True)
+        cli_status, cli_msg = check_copilot_cli_health()
+        if cli_status == "ok":
+            print("[OK] using Copilot CLI for analysis.")
+            cli_ok = True
+            analysis_source = "cli"
+        else:
+            print(f"[FAIL] {cli_msg}")
+            print("  Proceeding with heuristic fallback (no interactive retry).\n")
+            analysis_source = "heuristic"
     elif status == "auth":
         print(f"[FAIL] {msg}")
         print(f"\n  Authentication issue with the GitHub Models API — retrying won't help.")
