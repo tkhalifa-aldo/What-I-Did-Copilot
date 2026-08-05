@@ -17,6 +17,8 @@ services:
       - ./reports:/app/reports
       # Copilot CLI sessions from host.
       - ${HOME}/.copilot/session-state:/root/.copilot/session-state:ro
-      # VS Code Copilot Chat sessions from host (macOS path).
-      - ${HOME}/Library/Application Support/Code/User:/root/Library/Application Support/Code/User:ro
+      # VS Code Copilot Chat sessions from host.
+      # Container runs Linux and harvest.py reads ~/.config/Code/User there,
+      # so map macOS Code/User into that Linux path.
+      - ${HOME}/Library/Application Support/Code/User:/root/.config/Code/User:ro
     command: ["--7D", "--out-dir", "/app/reports"]

@@ -57,6 +57,8 @@ docker compose run --rm whatidid --7D --refresh --out-dir /app/reports
 ## Notes
 
 - Container runs Linux, so auto-open behavior is skipped, but HTML files are still written.
+- On macOS, VS Code session data is mounted from `~/Library/Application Support/Code/User`
+  into the Linux container path `~/.config/Code/User` so harvest can see it.
 - If no sessions are found, confirm these host paths exist:
   - `~/.copilot/session-state`
   - `~/Library/Application Support/Code/User`
