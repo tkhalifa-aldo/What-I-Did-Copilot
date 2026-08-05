@@ -75,6 +75,9 @@ def _api_auth_headers() -> dict:
 
 def _with_api_version(url: str) -> str:
     """Append api-version query parameter when configured and missing."""
+    # OpenAI-compatible /openai/v1 endpoints typically do not use api-version.
+    if "/openai/v1/" in url:
+        return url
     api_version = (os.environ.get("WHATIDID_API_VERSION") or "").strip()
     if not api_version:
         return url
@@ -83,6 +86,58 @@ def _with_api_version(url: str) -> str:
     if "api-version" not in q:
         q["api-version"] = api_version
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))
+
+
+def _is_responses_endpoint(url: str) -> bool:
+    """True when endpoint is OpenAI-style Responses API."""
+    path = urlsplit(url).path.rstrip("/").lower()
+    return path.endswith("/responses")
+
+
+def _build_api_payload(prompt: str, max_tokens: int, model: str, endpoint: str) -> bytes:
+    """Build provider payload for chat-completions or responses endpoints."""
+    if _is_responses_endpoint(endpoint):
+        payload = {
+            "model": model,
+            "input": prompt,
+            "max_output_tokens": max_tokens,
+        }
+    else:
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+    return json.dumps(payload).encode("utf-8")
+
+
+def _extract_response_text(response: dict) -> str:
+    """Extract text from either chat-completions or responses API shapes."""
+    # Chat-completions shape
+    try:
+        c = response["choices"][0]["message"]["content"]
+        if isinstance(c, str) and c.strip():
+            return c.strip()
+    except Exception:
+        pass
+
+    # Responses API convenience field
+    out_text = response.get("output_text")
+    if isinstance(out_text, str) and out_text.strip():
+        return out_text.strip()
+
+    # Responses API full structure
+    collected = []
+    for item in response.get("output", []) or []:
+        for part in item.get("content", []) or []:
+            if part.get("type") in ("output_text", "text"):
+                txt = part.get("text")
+                if isinstance(txt, str) and txt:
+                    collected.append(txt)
+    if collected:
+        return "\n".join(collected).strip()
+    return ""
 
 
 def _retry_delay(err, attempt: int) -> float:
@@ -363,10 +418,7 @@ def check_api_health() -> tuple:
         return "auth", "No auth found. Set WHATIDID_API_KEY (or WHATIDID_API_AUTH/WHATIDID_API_KEY)."
 
     # Minimal request — cheap and fast
-    payload = json.dumps({
-        "model": model, "max_tokens": 5, "temperature": 0,
-        "messages": [{"role": "user", "content": "ping"}],
-    }).encode("utf-8")
+    payload = _build_api_payload("ping", 32, model, endpoint)
 
     req = urllib.request.Request(
         endpoint, data=payload,
@@ -879,12 +931,7 @@ def analyze_day(target_date: str, sessions: list, refresh: bool = False,
     shrink_caps    = [16000, 8000]
 
     def _build_req(p: str) -> urllib.request.Request:
-        payload = json.dumps({
-            "model":       model,
-            "max_tokens":  3000,
-            "temperature": 0,
-            "messages":    [{"role": "user", "content": p}],
-        }).encode("utf-8")
+        payload = _build_api_payload(p, 3000, model, endpoint)
         return urllib.request.Request(
             endpoint, data=payload,
             headers={**auth_headers, "content-type": "application/json"},
@@ -896,7 +943,9 @@ def analyze_day(target_date: str, sessions: list, refresh: bool = False,
         try:
             with urllib.request.urlopen(_build_req(current_prompt), timeout=120) as resp:
                 response = json.loads(resp.read().decode("utf-8"))
-            raw = response["choices"][0]["message"]["content"].strip()
+            raw = _extract_response_text(response)
+            if not raw:
+                raise KeyError("No model text in API response")
             raw = _extract_json(raw)
             analysis = json.loads(raw)
             return _finalize_and_cache(analysis, "ai")
